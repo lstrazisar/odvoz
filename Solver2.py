@@ -4,6 +4,7 @@ import math
 import functools
 import random
 
+DRIVER_START = 0
 START_OF_WORKTIME = 480
 END_OF_WORKTIME = 960
 WORKTIME_DURATION = END_OF_WORKTIME - START_OF_WORKTIME
@@ -20,7 +21,7 @@ class Driver:
         self.capacity = capacity
         self.overtime_cost = overtime_cost
         self.driver_index = driver_index
-        self.time_spent = START_OF_WORKTIME  #let's say that nobody works before the start of worktime
+        self.time_spent = DRIVER_START  #let's say that nobody works before the start of worktime
         self.current_carry = 0
 
 class Client:
@@ -132,17 +133,15 @@ class Schedule:
                     client_ends[client_index] = route.start_time + route.duration
                 
         
-        """to_do"""
         drivers_overtime_cost = 0
         for i, (start_time, end_time) in enumerate(zip(driver_starts, driver_ends)):
             drivers_overtime_cost += self.problem.drivers[i].overtime_cost * (max(0, START_OF_WORKTIME - start_time) + max(0, end_time - END_OF_WORKTIME))
 
         clients_overtime_cost = 0
-        for i, (start_time, end_time) in enumerate(zip(client_starts, client_ends)):
-            for client in self.problem.clients:
-                if client.location_index == i:
-                    clients_overtime_cost += client.overtime_cost * (max(0, START_OF_WORKTIME - start_time) + max(0, end_time - END_OF_WORKTIME))
-
+        for i in self.problem.client_indexes:
+            start_time = client_starts[i]
+            end_time = client_ends[i]
+            clients_overtime_cost += self.problem.client_overtime_costs[i] * (max(0, START_OF_WORKTIME - start_time) + max(0, end_time - END_OF_WORKTIME))
 
         #print(kilometers, drivers_overtime_cost, clients_overtime_cost)
         #print(kilometers * self.problem.cost_per_kilometer + drivers_overtime_cost + clients_overtime_cost)
@@ -256,12 +255,12 @@ class Problem:
 
             clients = []
             client_indexes = []
-            client_overtime_costs = []
+            client_overtime_costs = [None for i in range(number_of_locations)]
             for i in range(number_of_clients):
                 location_index, number_of_barrels, barrel_cost, overtime_cost = list(map(int, file.readline().split()))
                 client_indexes.append(location_index - 1)
                 clients.append(Client(self, location_index - 1, number_of_barrels, barrel_cost, overtime_cost))
-                client_overtime_costs.append(overtime_cost)
+                client_overtime_costs[location_index - 1] = overtime_cost
                 location_types[location_index - 1] = "client"
 
             drivers = []
@@ -309,6 +308,24 @@ class Problem:
         for client in self.clients:
             client.calculate_closest_dump()
 
+        self.closest_dumps = []
+        for index in range(number_of_locations):
+            closest_dump = self.dump_indexes[0]
+            best_score = INF
+            for ci in self.dump_indexes:
+                score = self.get_real_distance(index, ci)
+                if score < best_score:
+                    closest_dump = ci
+                    best_score = score
+            self.closest_dumps.append(closest_dump)
+
+        self.best_dumps_moving_from_a2b = []
+        for y in range(number_of_locations):
+            line = []
+            for x in range(number_of_locations):
+                line.append(self.calculate_best_dump_moving_from(y, x))
+            self.best_dumps_moving_from_a2b.append(line)
+
     def type(self, location_index):
         return self.location_types[location_index]
     
@@ -331,6 +348,20 @@ class Problem:
     def get_path(self, i1, i2):
         return self.path_matrix[i1][i2]
     
+    def get_best_dump_moving_from(self, i1, i2):
+        return self.best_dumps_moving_from_a2b[i1][i2]
+    
+    def calculate_best_dump_moving_from(self, i1, i2):
+        best_index = self.dump_indexes[0]
+        best_score = INF
+        for index in self.dump_indexes:
+            score = self.get_real_distance(i1, index) + self.get_real_distance(index, i2)
+            if score < best_score:
+                best_score = score
+                best_index = index
+
+        return best_index
+    
     def dijkstra(self, start):
         #-1 for not yet visited, -2 for done
         dist = [-1 for l in range(self.number_of_locations)]
@@ -348,7 +379,7 @@ class Problem:
 
             dist[x] = p[x]; p[x] = -2
             for y in range(self.number_of_locations):
-                d = dist[x] + 4*self.get_distance(x, y) + self.get_time(x, y) #can be modified to care about time too
+                d = dist[x] + 4*self.get_distance(x, y) + 0* self.get_time(x, y) #can be modified to care about time too
                 if p[y] == -1 or p[y]>=0 and d < p[y]:
                     p[y] = d
                     prev[y] = x
@@ -381,7 +412,7 @@ class Problem:
     
     def restart(self):
         for driver in self.drivers:
-            driver.time_spent = START_OF_WORKTIME
+            driver.time_spent = DRIVER_START
             driver.current_location_index = driver.starting_location_index
             driver.current_carry = 0
         for client in self.clients:
@@ -404,7 +435,7 @@ class Problem:
                 score = self.cost_per_kilometer * self.get_real_distance(driver.current_location_index, ci) #to get to the client
                 time = self.get_real_time(driver.current_location_index, ci)
 
-                tours_needed = int(math.ceil(client.starting_number_of_barrels / driver.capacity))
+                tours_needed = int(math.ceil((client.starting_number_of_barrels + driver.current_carry) / driver.capacity))
                 score += self.cost_per_kilometer * (tours_needed - 1) * (self.get_real_distance(ci, client.closest_dump_index) + self.get_real_distance(client.closest_dump_index, ci)) #always except the last tour we have to go back
                 time += (tours_needed - 1) * (self.get_real_time(ci, client.closest_dump_index) + self.get_real_time(client.closest_dump_index, ci))
                 score += max(0, (time - WORKTIME_DURATION) * client.overtime_cost) #client overtime penalty
@@ -427,34 +458,160 @@ class Problem:
                 driver = self.drivers[best_driver_index]
                 """output and time update"""
                 # indexes start at 1, in our case they start at 0, so we have to add 1
+                added = min(client.barrels_left, driver.capacity - driver.current_carry)
                 path = self.get_path(driver.current_location_index, client.location_index)
                 schedule.add_route(Route(self, path, driver, driver.time_spent,
-                                         self.get_real_time(driver.current_location_index, client.location_index), 0, 0))
+                                         self.get_real_time(driver.current_location_index, client.location_index), 0, added))
                 driver.time_spent += self.get_real_time(driver.current_location_index, client.location_index)
+                client.barrels_left -= added
+                driver.current_carry += added
                 driver.current_location_index = client.location_index
 
                 for tour in range(best_tours - 1):
                     path = self.get_path(client.location_index, client.closest_dump_index)
                     schedule.add_route(Route(self, path, driver, driver.time_spent,
-                                             self.get_real_time(client.location_index, client.closest_dump_index), driver.capacity, -driver.capacity))
+                                             self.get_real_time(client.location_index, client.closest_dump_index), 0, -driver.current_carry))
                     driver.time_spent += self.get_real_time(client.location_index, client.closest_dump_index)
+                    driver.current_carry = 0
                     
                     path = self.get_path(client.closest_dump_index, client.location_index)
                     schedule.add_route(Route(self, path, driver, driver.time_spent,
-                                             self.get_real_time(client.closest_dump_index, client.location_index), 0, 0))
+                                             self.get_real_time(client.closest_dump_index, client.location_index), 0, min(client.barrels_left, driver.capacity)))
                     driver.time_spent += self.get_real_time(client.closest_dump_index, client.location_index)
-                    client.barrels_left -= driver.capacity
+                    driver.current_carry = min(driver.capacity, client.barrels_left)
+                    client.barrels_left -= min(driver.capacity, client.barrels_left)
 
                 """last travel of the tour"""
-                path = self.get_path(client.location_index, client.closest_dump_index)
-                schedule.add_route(Route(self, path, driver, driver.time_spent,
-                                        self.get_real_time(client.location_index, client.closest_dump_index), client.barrels_left, -client.barrels_left))
-                driver.time_spent += self.get_real_time(client.location_index, client.closest_dump_index)
-                client.barrels_left = 0
-                driver.current_location_index = client.closest_dump_index
+                if driver.current_carry >= driver.capacity * (1/3):
+                    path = self.get_path(client.location_index, client.closest_dump_index)
+                    schedule.add_route(Route(self, path, driver, driver.time_spent,
+                                            self.get_real_time(client.location_index, client.closest_dump_index), 0, -driver.current_carry))
+                    driver.time_spent += self.get_real_time(client.location_index, client.closest_dump_index)
+                    driver.current_location_index = client.closest_dump_index
+                    driver.current_carry = 0
+                
         
-        """at the end we move all drivers home"""
+        """at the end all drivers empty their vehicles and moe home"""
         for driver in self.drivers:
+            if driver.current_carry != 0:
+                dump = None
+                for client in self.clients:
+                    if driver.current_location_index == client.location_index:
+                        dump = client.closest_dump_index 
+                path = self.get_path(driver.current_location_index, dump)
+                schedule.add_route(Route(self,path, driver, driver.time_spent, self.get_real_time(driver.current_location_index, dump), 0, -driver.current_carry))
+                driver.time_spent += self.get_real_time(driver.current_location_index, dump)
+                driver.current_location_index = dump
+
+            if driver.current_location_index != driver.starting_location_index:
+                path = self.get_path(driver.current_location_index, driver.starting_location_index)
+                schedule.add_route(Route(self,path, driver, driver.time_spent, self.get_real_time(driver.current_location_index, driver.starting_location_index), 0, 0))
+                driver.time_spent += self.get_real_time(driver.current_location_index, driver.starting_location_index)
+        
+        barrels_cost = 0
+        for client in self.clients:
+            barrels_cost += client.barrels_left * client.barrel_cost
+
+        self.restart()
+        return schedule, barrels_cost
+    
+    def solve2(self):
+        self.restart()
+        schedule = Schedule(problem, [])
+        #self.clients.sort(key=lambda x : self.get_real_time(x.location_index, x.closest_dump_index) + self.get_real_time(x.closest_dump_index, x.location_index))
+
+        random.shuffle(self.clients)
+        for client in self.clients:
+            ci = client.location_index #Client Index
+            best_score = INF
+            best_driver_index = -1
+            best_tours = -1
+
+            for driver in self.drivers:
+                score = 0
+                time = 0
+                di = driver.current_location_index #driver index
+                carry = driver.current_carry
+
+                #if driver.current_carry >= driver.capacity // 3:
+                score = self.cost_per_kilometer * self.get_real_distance(di, self.best_dumps_moving_from_a2b[di][ci])  #go to dump on path to next client
+                time = self.get_real_time(di, self.best_dumps_moving_from_a2b[di][ci])
+                di = self.best_dumps_moving_from_a2b[di][ci]
+                carry = 0
+
+
+                score += self.cost_per_kilometer * self.get_real_distance(di, ci) #to get to the client
+                time += self.get_real_time(di, ci)
+
+                tours_needed = int(math.ceil((client.starting_number_of_barrels + carry) / driver.capacity))
+                dump_index = self.best_dumps_moving_from_a2b[ci][ci]
+                score += self.cost_per_kilometer * (tours_needed - 1) * (self.get_real_distance(ci, dump_index) + self.get_real_distance(dump_index, ci)) #always except the last tour we have to go back
+                time += (tours_needed - 1) * (self.get_real_time(ci, dump_index) + self.get_real_time(dump_index, ci))
+                score += max(0, (time - WORKTIME_DURATION) * client.overtime_cost) #client overtime penalty
+
+                dump = self.best_dumps_moving_from_a2b[ci][driver.starting_location_index]
+                score += self.cost_per_kilometer * self.get_real_distance(ci, dump)
+                time += self.get_real_time(ci, dump)
+
+                score += self.cost_per_kilometer * self.get_real_distance(dump, driver.starting_location_index)  # to get back home (ussualy driver will have just 1 client)
+                time += self.get_real_time(dump, driver.starting_location_index)
+                #score += max(0, (time - (WORKTIME_DURATION - driver.time_spent) - WORKTIME_DURATION) * driver.overtime_cost)
+                score += max(0, (time + driver.time_spent - 2*WORKTIME_DURATION ) * driver.overtime_cost)
+
+                if score < best_score and driver.time_spent + time <= DAY_LENGTH:  
+                    best_score = score
+                    best_driver_index = driver.driver_index
+                    best_tours = tours_needed
+
+            if best_driver_index != -1:
+                driver = self.drivers[best_driver_index]
+                """empty (if current carry is big)"""
+                #if driver.current_carry >= driver.capacity // 3:
+                dump_index = self.best_dumps_moving_from_a2b[driver.current_location_index][client.location_index]
+                path = self.get_path(driver.current_location_index, dump_index)
+                schedule.add_route(Route(self, path, driver, driver.time_spent,
+                                        self.get_real_time(driver.current_location_index, dump_index), 0, -driver.current_carry))
+                driver.time_spent += self.get_real_time(driver.current_location_index, dump_index)
+                driver.current_carry  = 0
+                driver.current_location_index = dump_index
+
+                """go to client"""
+                added = min(driver.capacity, client.barrels_left)
+                path = self.get_path(driver.current_location_index, client.location_index)
+                schedule.add_route(Route(self, path, driver, driver.time_spent,
+                                         self.get_real_time(driver.current_location_index, client.location_index), 0, added))
+                driver.time_spent += self.get_real_time(driver.current_location_index, client.location_index)
+                client.barrels_left -= added
+                driver.current_carry += added
+                driver.current_location_index = client.location_index
+
+                """collect barrels and get them to the dump (if there ary any left at that client)"""
+                while client.barrels_left > 0:
+                    dump_index = self.best_dumps_moving_from_a2b[client.location_index][client.location_index]
+                    path = self.get_path(client.location_index, dump_index)
+                    schedule.add_route(Route(self, path, driver, driver.time_spent,
+                                             self.get_real_time(client.location_index, dump_index), 0, -driver.current_carry))
+                    driver.time_spent += self.get_real_time(client.location_index, dump_index)
+                    driver.current_carry = 0
+                    
+                    path = self.get_path(dump_index, client.location_index)
+                    change =  min(client.barrels_left, driver.capacity)
+                    schedule.add_route(Route(self, path, driver, driver.time_spent,
+                                             self.get_real_time(dump_index, client.location_index), 0, change))
+                    driver.time_spent += self.get_real_time(dump_index, client.location_index)
+                    driver.current_carry = change
+                    client.barrels_left -= change
+                
+        
+        """at the end all drivers empty their vehicles and moe home"""
+        for driver in self.drivers:
+            if driver.current_carry != 0:
+                dump = self.best_dumps_moving_from_a2b[driver.current_location_index][driver.starting_location_index]
+                path = self.get_path(driver.current_location_index, dump)
+                schedule.add_route(Route(self,path, driver, driver.time_spent, self.get_real_time(driver.current_location_index, dump), 0, -driver.current_carry))
+                driver.time_spent += self.get_real_time(driver.current_location_index, dump)
+                driver.current_location_index = dump
+
             if driver.current_location_index != driver.starting_location_index:
                 path = self.get_path(driver.current_location_index, driver.starting_location_index)
                 schedule.add_route(Route(self,path, driver, driver.time_spent, self.get_real_time(driver.current_location_index, driver.starting_location_index), 0, 0))
@@ -472,10 +629,10 @@ if __name__ == "__main__":
     #print("Odvoz")
     
     problem = Problem(sys.argv[1], sys.argv[2])
-    best_schedule, best_barrels_cost = problem.solve()
+    best_schedule, best_barrels_cost = problem.solve2()
     best_value = best_schedule.evaluate(best_barrels_cost)
-    for t in range(10000):
-        new_schedule, new_barrel_cost = problem.solve()
+    for t in range(1000):
+        new_schedule, new_barrel_cost = problem.solve2()
         new_value = new_schedule.evaluate(new_barrel_cost)
         if new_value < best_value:
             best_schedule = new_schedule 
