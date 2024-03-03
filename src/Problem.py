@@ -6,7 +6,7 @@ from Schedule import Schedule
 
 DISTANCE_FACTOR = 3
 TIME_FACTOR = 1
-DRIVER_START = 480
+DRIVER_START = 0
 START_OF_WORKTIME = 480
 END_OF_WORKTIME = 960
 WORKTIME_DURATION = END_OF_WORKTIME - START_OF_WORKTIME
@@ -531,3 +531,10 @@ class Problem:
 
         self.restart()
         return schedule, barrels_cost
+    
+    def get_optimized(self, client_orders):
+        empty_matrix = self.optimize_client_orders(client_orders)
+        schedule, barrels_cost = self.client_orders2schedule(client_orders, empty_matrix)
+        score = schedule.evaluate(barrels_cost)
+        
+        return score, schedule

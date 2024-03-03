@@ -6,8 +6,8 @@ from Tour import Path, Route
 from Problem import Problem
 from Schedule import Schedule
 
-SHUFFLE_ITERATIONS = 15
-SWAP_ITERATIONS = 3000
+SHUFFLE_ITERATIONS = 15000
+SWAP_ITERATIONS = 10000
 
 
 
@@ -18,6 +18,8 @@ if __name__ == "__main__":
     random.shuffle(best_permutation_ever)
     best_schedule_ever, best_barrels_cost_ever, best_visits_ever = problem.solve(best_permutation_ever)
     best_value_ever = best_schedule_ever.evaluate(best_barrels_cost_ever)
+
+    output_score = -1
     for t1 in range(SHUFFLE_ITERATIONS):
 
         best_permutation = [i for i in range(len(problem.clients))]
@@ -46,6 +48,17 @@ if __name__ == "__main__":
                 best_barrels_cost_ever = new_barrel_cost
                 best_visits_ever = new_visits
                 best_permutation_ever = new_permutation
+
+                empty_matrix = problem.optimize_client_orders(best_visits_ever)
+                new_schedule, new_barrel_cost = problem.client_orders2schedule(best_visits_ever, empty_matrix)
+                new_score = new_schedule.evaluate(new_barrel_cost)
+                new_schedule.print()
+                print(new_score)
+                output_score = new_score
+
+            if t2%1000 == 0:
+                print("iteration:", t2, "  best_score", output_score)
+        print("restart")
     
     score = best_schedule_ever.evaluate(best_barrels_cost_ever)
 
